@@ -1,0 +1,25 @@
+# Python dependencies for the imaging feature extraction and modelling stages.
+#
+# The genomics stage runs in R (see R/) and needs the NeuroimaGene package.
+# Imaging preprocessing needs FSL and FastSurfer, both installed separately.
+
+pandas
+numpy
+scipy
+
+# neuroimaging
+nibabel
+nilearn
+
+# time-series feature extraction
+tsfresh
+
+# modelling
+scikit-learn
+
+# plotting
+matplotlib
+seaborn
+
+# notebooks
+jupyter
