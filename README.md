@@ -25,24 +25,24 @@ Expression matrices were extracted from the two GEO series and aligned on their 
 
 The top 350 were submitted to the NeuroimaGene R package against the Desikan-Killiany atlas, with BH correction. Only **20 of the 350 were present in the NeuroimaGene database**, producing 696 gene-region associations across 82 unique brain region phenotypes (`results/NextF350_results.csv`). Volume-based phenotypes were prioritised, since the imaging data is 4D.
 
-### Stage 2 — Imaging preprocessing (`scripts/`)
+### Stage 2 — Imaging preprocessing and segmentation (`scripts/`)
 
-Run from the terminal, separately for the glioblastoma and control cohorts:
+The project began on structural (T1/T2) scans. Those were preprocessed and carried forward until the modelling stage, where it became clear there was no time series to extract from them. The imaging work restarted on 4D EPI perfusion MRI, which was what UPenn had available.
+
+Preprocessing produced, for each subject, a reoriented 4D volume, a first volume, a brain mask, and a masked brain-only image. **The tool that produced these outputs is not recorded.** The earlier hand-written FSL scripts were superseded when the dataset changed, and the replacement step was not documented. Only the segmentation scripts appear here, because they are the only preprocessing code confirmed to match the outputs actually used.
 
 | Script | Does |
 |---|---|
-| `01_convert_dicom_to_nifti.sh` | DICOM to NIfTI conversion (glioblastoma scans; the control scans arrived as NIfTI) |
-| `02_reorient_gbm.sh`, `03_reorient_controls.sh` | Reorientation to standard anatomical space |
-| `04_extract_first_volume_controls.sh` | Extraction of a representative 3D volume from the 4D series, via FSL `fslroi` |
-| `05_run_fastsurfer_gbm.sh`, `06_run_fastsurfer_controls.sh` | FastSurfer segmentation and regional labelling against the Desikan-Killiany atlas |
+| `01_run_fastsurfer_gbm.sh` | FastSurfer segmentation, glioblastoma cohort |
+| `02_run_fastsurfer_controls.sh` | FastSurfer segmentation, control cohort |
 
-Preprocessing used FSL throughout: `fslreorient2std` for reorientation, `fslroi` for volume extraction, and `bet` for brain extraction. The same steps were applied to both cohorts — the intermediate outputs confirm it — but the glioblastoma equivalents of the volume-extraction and masking scripts were not kept, so only the control versions appear here.
-
-Brain extraction was run on both cohorts and then not used downstream. It turned out to be unnecessary: features are extracted from atlas-defined cortical regions, so non-brain tissue never enters a region of interest. It would only have mattered for a whole-brain analysis.
+FastSurfer cannot segment a 4D series, so a single representative volume was extracted from each scan and passed to it. Segmentation ran in Docker (`deepmi/fastsurfer`) and produced Desikan-Killiany-Tourville parcellations.
 
 ### Stage 3 — Region alignment and feature extraction (`notebooks/01`, `notebooks/02`)
 
-Nilearn was used to align the 4D scans to the 3D segmentations and extract voxel intensities from the regions of interest. Regional mean intensity was recorded at each timepoint, giving one time series per subject-region (`data/processed/region_timeseries/`).
+Each subject's 4D brain-extracted scan was resampled onto its own segmentation grid with Nilearn (`resample_img`, matching affine and shape), then voxels were selected by atlas label and averaged at each timepoint. That gives one mean-intensity time series per subject-region (`data/processed/region_timeseries/`).
+
+Ten regions were targeted, taken from the NeuroimaGene output and specified by numeric label.
 
 TSFresh then summarised each time series into six static features: mean, standard deviation, skewness, kurtosis, absolute energy, and autocorrelation at lag 1. Static summaries were needed because the classifiers could not consume full time series.
 
@@ -71,7 +71,7 @@ data/processed/
 ├── GBM_Genes.csv           expression matrix, glioblastoma samples
 ├── Normal_Genes.csv        expression matrix, healthy samples
 └── region_timeseries/      one CSV per subject: regional mean intensity per timepoint
-results/                    NeuroimaGene gene-region associations
+results/NextF350_results.csv   NeuroimaGene gene-region associations
 figures/                    figures as they appear in the thesis
 ```
 
@@ -145,7 +145,29 @@ The correct approach is grouped splitting — `GroupKFold` or `GroupShuffleSplit
 
 `precision_recall_curve` was called with predicted class labels rather than predicted probabilities. A precision-recall curve needs continuous scores to sweep the decision threshold; with binary labels there are only two points, so the reported PR-AUC values are not meaningful threshold sweeps. The probabilities were already computed and should have been passed instead.
 
-### 5. Minor: an undocumented cutoff
+### 5. The region labels came from a different atlas than the segmentation
+
+Regions were identified through NeuroimaGene queried against the **Desikan-Killiany** atlas, and the thesis describes Desikan-Killiany throughout. But segmentation used FastSurfer's `aparc.DKTatlas+aseg.deep.mgz` output — the **Desikan-Killiany-Tourville** parcellation, a revision that redraws several boundaries and drops some regions altogether.
+
+The frontal pole is one of the regions DKT removes. `lh_volume_frontalpole` was in the target list as label 1032, so it could never match a voxel in a DKT segmentation. That region was guaranteed to return nothing for every subject, and the thesis reports it as one of the regions that was simply not found.
+
+More broadly, any region where the two parcellations disagree is suspect, not only the frontal pole. Labels should be taken from the same atlas that produced the segmentation.
+
+### 6. FastSurfer was given a perfusion volume, not a structural scan
+
+FastSurfer's segmentation network is trained on T1-weighted structural images. Because it cannot process a 4D series, a single frame from the EPI perfusion acquisition was extracted and passed to its `--t1` argument. A perfusion frame has substantially weaker grey/white matter contrast and more geometric distortion than a T1.
+
+This is a plausible explanation for something the thesis reports without one: FastSurfer identified none of the ten target regions in six of twenty glioblastoma scans, and the regions it did find varied unpredictably between subjects. That pattern is what out-of-distribution input to a segmentation model looks like, rather than random failure.
+
+The constraint was real — the supervisor required 4D data, perfusion was what the UPenn collection offered, and FastSurfer needs a 3D input. But the segmentation quality that followed should be treated as uncertain.
+
+### 7. Preprocessing provenance was not recorded
+
+The tool that produced the reoriented volumes, first volumes and brain masks is not known. Early FSL scripts were written, then superseded when the dataset changed from structural to 4D perfusion, and the replacement was never captured. The outputs exist and the analysis depends on them, but the step cannot currently be reproduced.
+
+The fix is procedural rather than technical: keep preprocessing code under version control from the start, so that changing datasets mid-project doesn't quietly orphan a stage.
+
+### 8. Minor: an undocumented cutoff
 
 350 of the 381 significant genes were submitted to NeuroimaGene, with no rationale stated in the thesis. Given that only 20 genes matched the database, this cutoff is unlikely to have changed the outcome — but there was no reason for it, and it should have been all 381 or an explained subset.
 
@@ -155,7 +177,7 @@ The correct approach is grouped splitting — `GroupKFold` or `GroupShuffleSplit
 
 Use cases and controls from the same acquisition protocol. That single change matters more than all the code fixes combined, because no amount of correct validation rescues a design where the label is perfectly correlated with the scanner.
 
-Beyond that: grouped splitting on subject ID, scaling inside a pipeline, PR-AUC from probabilities, and a stated rationale for any filtering step.
+Beyond that: take region labels from the same atlas that produced the segmentation; keep every preprocessing step under version control; use grouped splitting on subject ID; put scaling inside a pipeline; compute PR-AUC from probabilities; and state a rationale for any filtering step.
 
 ## Reproducing
 
